@@ -140,6 +140,19 @@
   .lyrics[hidden] { display: none; }
   .song { font-weight: 500; font-size: 1.1rem; margin-bottom: 6px; white-space: normal; }
 
+  .kara { position: fixed; left: 0; right: 0; padding: 0 18px; text-align: center; }
+  .kara[hidden], .k-ctl[hidden] { display: none; }
+  .k-cur {
+    display: inline-block; font-weight: 500; line-height: 1.35;
+    font-size: clamp(1.35rem, 3.6vw, 2.3rem);
+    background: linear-gradient(90deg, var(--cyan) 0%, var(--pink) var(--kp, 0%), #fff var(--kp, 0%));
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+    filter: drop-shadow(0 2px 10px rgba(0, 0, 0, .7));
+  }
+  .k-next { min-height: 1.7em; margin-top: 2px; color: var(--muted); font-size: clamp(.95rem, 2vw, 1.15rem); }
+  .k-ctl { display: flex; justify-content: center; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+  .k-ctl .pick { padding: 5px 14px; font-size: .85rem; }
+
   .drop {
     position: fixed; inset: 14px; border-radius: 26px;
     border: 2px dashed var(--cyan); background: rgba(10, 7, 20, .7);
@@ -190,6 +203,16 @@
 
 
 
+<div class="kara" id="kara" hidden>
+  <div><span class="k-cur" id="kCur"></span></div>
+  <div class="k-next" id="kNext"></div>
+  <div class="k-ctl" id="kCtl">
+    <button class="pick" id="kSync">เริ่มร้องท่อนแรก</button>
+    <button class="pick" id="kBack" aria-label="เลื่อนเนื้อเพลงให้ช้าลงครึ่งวินาที">เนื้อช้าลง</button>
+    <button class="pick" id="kFwd" aria-label="เลื่อนเนื้อเพลงให้เร็วขึ้นครึ่งวินาที">เนื้อเร็วขึ้น</button>
+  </div>
+</div>
+
 <div class="drop">วางไฟล์เพลงตรงนี้</div>
 
 <script>
@@ -203,7 +226,7 @@
   var audio = new Audio();
   var actx = null, analyser = null, freq = null, wave = null;
   var BARS = 128, levels = new Float32Array(BARS), bass = 0;
-  var W = 0, H = 0, dpr = 1, seeking = false, panelTop = 0, peak = 90, wpeak = 0.04, energy = 0;
+  var W = 0, H = 0, dpr = 1, seeking = false, panelTop = 0, peak = 90, wpeak = 0.04, energy = 0, kH = 0, quiet = 0, lastT = performance.now();
   var panel = document.querySelector('.panel');
   var calm = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
@@ -416,6 +439,7 @@
     var q = qEl.value.trim();
     if (!q) { showLyrics('วางลิงก์ YouTube หรือพิมพ์ชื่อเพลงก่อน', ''); return; }
     var isLink = /^https?:\/\//i.test(q), shown = q;
+    stopKaraoke();
     showLyrics('กำลังค้นหา…', '');
     var name = isLink
       ? fetch('https://noembed.com/embed?url=' + encodeURIComponent(q))
@@ -431,8 +455,19 @@
       return fetch('https://lrclib.net/api/search?q=' + encodeURIComponent(n)).then(function (r) { return r.json(); });
     }).then(function (list) {
       var hit = null;
-      for (var i = 0; list && i < list.length; i++) if (list[i].plainLyrics) { hit = list[i]; break; }
-      if (hit) showLyrics(hit.trackName + ' · ' + hit.artistName, hit.plainLyrics);
+      var i, lines = null;
+      for (i = 0; list && i < list.length; i++) if (list[i].syncedLyrics) { hit = list[i]; break; }
+      if (hit) lines = parseLrc(hit.syncedLyrics);
+      if (!lines || !lines.length) {
+        lines = null; hit = null;
+        for (i = 0; list && i < list.length; i++) if (list[i].plainLyrics) { hit = list[i]; break; }
+      }
+      if (hit && lines) {
+        showLyrics(hit.trackName + ' · ' + hit.artistName, '');
+        startKaraoke(lines);
+      } else if (hit) {
+        showLyrics(hit.trackName + ' · ' + hit.artistName + ' (เพลงนี้ไม่มีเนื้อแบบจับเวลา)', hit.plainLyrics);
+      }
       else showLyrics(shown, 'ไม่พบเนื้อเพลงของเพลงนี้ ลองพิมพ์ชื่อเพลงกับชื่อศิลปินเองแล้วค้นอีกครั้ง');
     }).catch(function () {
       showLyrics(isLink && shown === q ? 'อ่านชื่อเพลงจากลิงก์ไม่ได้' : shown,
@@ -442,6 +477,66 @@
 
   document.getElementById('qGo').onclick = findSong;
   qEl.addEventListener('keydown', function (e) { if (e.key === 'Enter') findSong(); });
+
+  // ---------- คาราโอเกะ ----------
+  var kara = document.getElementById('kara'), kCur = document.getElementById('kCur');
+  var kNext = document.getElementById('kNext'), kCtl = document.getElementById('kCtl');
+  var kLines = null, kIdx = -2, kTime = 0, kRun = false;
+
+  // แปลงเนื้อเพลงแบบจับเวลา "[01:23.45] เนื้อร้อง" เป็นรายการ {t: วินาที, s: ข้อความ}
+  function parseLrc(text) {
+    var out = [];
+    text.split('\n').forEach(function (row) {
+      var m = row.match(/^\[(\d+):(\d+(?:\.\d+)?)\]\s*(.*)$/);
+      if (m) out.push({ t: (+m[1]) * 60 + (+m[2]), s: m[3].trim() });
+    });
+    return out;
+  }
+
+  function startKaraoke(lines) {
+    kLines = lines; kIdx = -2; kTime = 0; kRun = false;
+    kara.hidden = false;
+    resize();
+  }
+
+  function stopKaraoke() {
+    kLines = null;
+    kara.hidden = true;
+    resize();
+  }
+
+  function updateKaraoke(dt) {
+    if (!kLines) return;
+    // ไฟล์เพลงในเครื่อง: รู้เวลาเล่นจริง จึงตรงเองอัตโนมัติ
+    // แท็บ YouTube หรือไมค์: ไม่รู้เวลาเล่น ต้องให้ผู้ใช้กดบอกจังหวะเริ่ม แล้วนับเวลาเอง
+    var fileMode = !!audio.src && !tabOn && !micOn;
+    if (kCtl.hidden !== fileMode) { kCtl.hidden = fileMode; resize(); }
+    if (fileMode) kTime = audio.currentTime;
+    else if (kRun && !(tabOn && quiet > 30)) kTime += dt;   // แท็บเงียบสนิท = วิดีโอหยุด ก็หยุดนับด้วย
+    var started = fileMode || kRun, idx = -1, j;
+    if (started) for (j = 0; j < kLines.length; j++) { if (kLines[j].t <= kTime) idx = j; else break; }
+    if (idx !== kIdx) {
+      kIdx = idx;
+      kCur.textContent = idx < 0 ? (started ? '♪' : 'กด "เริ่มร้องท่อนแรก" ตอนนักร้องเริ่มร้อง') : (kLines[idx].s || '♪');
+      var nx = kLines[idx + 1];
+      kNext.textContent = nx ? (nx.s || '♪') : '';
+    }
+    var p = 0;
+    if (idx >= 0) {
+      var t0 = kLines[idx].t, t1 = kLines[idx + 1] ? kLines[idx + 1].t : t0 + 5;
+      p = Math.min(1, (kTime - t0) / Math.max(0.5, Math.min(t1 - t0, 8)));
+    }
+    kCur.style.setProperty('--kp', (p * 100).toFixed(1) + '%');
+  }
+
+  document.getElementById('kSync').onclick = function () {
+    if (!kLines) return;
+    var first = 0;
+    for (var j = 0; j < kLines.length; j++) if (kLines[j].s) { first = kLines[j].t; break; }
+    kTime = first; kRun = true; kIdx = -2;
+  };
+  document.getElementById('kBack').onclick = function () { kTime = Math.max(0, kTime - 0.5); };
+  document.getElementById('kFwd').onclick = function () { kTime += 0.5; };
 
   // เปิดหน้าเว็บแล้วขออนุญาตใช้ไมค์ทันที
   window.addEventListener('pointerdown', function () {
@@ -466,7 +561,12 @@
     cv.width = W * dpr; cv.height = H * dpr;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     panelTop = panel.getBoundingClientRect().top;
-    disc.parentElement.style.bottom = (H - panelTop + 10) + 'px';
+    kara.style.bottom = (H - panelTop + 8) + 'px';
+    kH = kara.hidden ? 0 : kara.offsetHeight + 10;
+    disc.parentElement.style.bottom = (H - panelTop + 10 + kH) + 'px';
+    // ย่อไอคอนเมื่อพื้นที่ด้านบนเหลือน้อย
+    var room = panelTop - 10 - kH;
+    disc.style.setProperty('--size', Math.max(80, Math.min(230, W * 0.42, room * 0.5)) + 'px');
   }
   window.addEventListener('resize', resize);
   resize();
@@ -488,6 +588,7 @@
       peak = Math.max(peak * 0.995, mx, 90);
       for (i = 0; i < wave.length; i += 4) dv = Math.max(dv, Math.abs(wave[i] - 128) / 128);
       wpeak = Math.max(wpeak * 0.99, dv, 0.04);
+      quiet = mx < 5 ? quiet + 1 : 0;
     }
 
     // ระดับเสียงของแต่ละแท่ง (สมมาตรซ้าย-ขวา)
@@ -516,6 +617,9 @@
       if (i < 10) b += levels[i];
     }
     bass += (b / 10 - bass) * 0.35;
+
+    updateKaraoke((now - lastT) / 1000);
+    lastT = now;
 
     ctx.clearRect(0, 0, W, H);
 
@@ -554,7 +658,7 @@
     }
 
     // เส้นคลื่นเสียงด้านล่าง
-    var wy = panelTop - 40, amp = Math.min(60, H * 0.07);
+    var wy = panelTop - 40 - kH, amp = Math.min(60, H * 0.07);
     var grad = ctx.createLinearGradient(0, 0, W, 0);
     grad.addColorStop(0, 'rgba(255, 79, 163, 0)');
     grad.addColorStop(0.2, '#ff4fa3');
