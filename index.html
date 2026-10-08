@@ -132,6 +132,14 @@
   .yt-frame iframe { width: 100%; height: 100%; border: 0; display: block; }
   .yt .pick { margin-top: 6px; padding: 3px 12px; font-size: .78rem; background: rgba(22, 16, 44, .7); }
 
+  .lyrics {
+    margin-top: 14px; padding: 4px 6px 2px; max-height: min(24vh, 200px); overflow-y: auto;
+    text-align: center; white-space: pre-line; line-height: 1.75; font-size: .95rem;
+    scrollbar-width: thin; scrollbar-color: rgba(255, 255, 255, .25) transparent;
+  }
+  .lyrics[hidden] { display: none; }
+  .song { font-weight: 500; font-size: 1.1rem; margin-bottom: 6px; white-space: normal; }
+
   .drop {
     position: fixed; inset: 14px; border-radius: 26px;
     border: 2px dashed var(--cyan); background: rgba(10, 7, 20, .7);
@@ -169,6 +177,14 @@
     <label class="pick">เลือกเพลง<input type="file" id="file" accept="audio/*"></label>
     <button class="pick" id="mic" aria-pressed="false">เปิดไมค์</button>
     <button class="pick" id="tabBtn" aria-pressed="false">จับเสียงจากแท็บ YouTube</button>
+  </div>
+  <div class="row sources">
+    <input class="link" id="q" type="text" placeholder="วางลิงก์ YouTube หรือพิมพ์ชื่อเพลง" aria-label="ลิงก์ YouTube หรือชื่อเพลง">
+    <button class="pick" id="qGo">หาเนื้อเพลง</button>
+  </div>
+  <div class="lyrics" id="lyrics" hidden>
+    <div class="song" id="song"></div>
+    <div id="lyText"></div>
   </div>
 </div>
 
@@ -376,6 +392,56 @@
     if (tabOn) { stopTab(); say('หยุดจับเสียงจากแท็บแล้ว', true); }
     else startTab();
   };
+
+  // ---------- ชื่อเพลงและเนื้อเพลง ----------
+  var qEl = document.getElementById('q'), lyBox = document.getElementById('lyrics');
+  var songEl = document.getElementById('song'), lyText = document.getElementById('lyText');
+
+  // ตัดคำอย่าง [Official MV] ออกจากชื่อคลิป เพื่อให้ค้นเนื้อเพลงเจอง่ายขึ้น
+  function cleanTitle(t) {
+    return t.replace(/[\[\(【「].*?[\]\)】」]/g, ' ')
+            .replace(/official|music video|\bmv\b|lyrics?|audio|visualizer|\bhd\b|\b4k\b/ig, ' ')
+            .replace(/[|｜]/g, ' ').replace(/\s+/g, ' ').trim();
+  }
+
+  function showLyrics(song, text) {
+    lyBox.hidden = false;
+    songEl.textContent = song;
+    lyText.textContent = text;
+    lyBox.scrollTop = 0;
+    resize();
+  }
+
+  function findSong() {
+    var q = qEl.value.trim();
+    if (!q) { showLyrics('วางลิงก์ YouTube หรือพิมพ์ชื่อเพลงก่อน', ''); return; }
+    var isLink = /^https?:\/\//i.test(q), shown = q;
+    showLyrics('กำลังค้นหา…', '');
+    var name = isLink
+      ? fetch('https://noembed.com/embed?url=' + encodeURIComponent(q))
+          .then(function (r) { return r.json(); })
+          .then(function (d) {
+            if (!d.title) throw new Error('no title');
+            shown = d.title;
+            showLyrics(shown, 'กำลังหาเนื้อเพลง…');
+            return cleanTitle(d.title);
+          })
+      : Promise.resolve(q);
+    name.then(function (n) {
+      return fetch('https://lrclib.net/api/search?q=' + encodeURIComponent(n)).then(function (r) { return r.json(); });
+    }).then(function (list) {
+      var hit = null;
+      for (var i = 0; list && i < list.length; i++) if (list[i].plainLyrics) { hit = list[i]; break; }
+      if (hit) showLyrics(hit.trackName + ' · ' + hit.artistName, hit.plainLyrics);
+      else showLyrics(shown, 'ไม่พบเนื้อเพลงของเพลงนี้ ลองพิมพ์ชื่อเพลงกับชื่อศิลปินเองแล้วค้นอีกครั้ง');
+    }).catch(function () {
+      showLyrics(isLink && shown === q ? 'อ่านชื่อเพลงจากลิงก์ไม่ได้' : shown,
+                 'ค้นหาไม่สำเร็จ ตรวจลิงก์หรืออินเทอร์เน็ตแล้วลองอีกครั้ง');
+    });
+  }
+
+  document.getElementById('qGo').onclick = findSong;
+  qEl.addEventListener('keydown', function (e) { if (e.key === 'Enter') findSong(); });
 
   // เปิดหน้าเว็บแล้วขออนุญาตใช้ไมค์ทันที
   window.addEventListener('pointerdown', function () {
