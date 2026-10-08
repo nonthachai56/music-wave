@@ -158,7 +158,7 @@
     <button class="play" id="play" disabled aria-label="เล่น">
       <svg id="icon" viewBox="0 0 24 24"><path d="M7 4v16l14-8z"/></svg>
     </button>
-    <div class="title empty" id="title">เลือกเพลง เปิดไมค์ หรือวางลิงก์ YouTube</div>
+    <div class="title empty" id="title">เลือกเพลง เปิดไมค์ หรือจับเสียงจากแท็บ YouTube</div>
   </div>
   <div class="row seek">
     <span class="time" id="cur">0:00</span>
@@ -168,15 +168,11 @@
   <div class="row sources">
     <label class="pick">เลือกเพลง<input type="file" id="file" accept="audio/*"></label>
     <button class="pick" id="mic" aria-pressed="false">เปิดไมค์</button>
-    <input class="link" id="ytUrl" type="url" placeholder="วางลิงก์ YouTube" aria-label="ลิงก์ YouTube">
-    <button class="pick" id="ytGo">เปิด</button>
+    <button class="pick" id="tabBtn" aria-pressed="false">จับเสียงจากแท็บ YouTube</button>
   </div>
 </div>
 
-<div class="yt" id="yt" hidden>
-  <div class="yt-frame" id="ytFrame"></div>
-  <button class="pick" id="ytClose">ปิดวิดีโอ</button>
-</div>
+
 
 <div class="drop">วางไฟล์เพลงตรงนี้</div>
 
@@ -218,7 +214,7 @@
       return;
     }
     setupAudio();
-    stopMic(); closeYt();
+    stopMic(); stopTab();
     if (audio.src) URL.revokeObjectURL(audio.src);
     audio.src = URL.createObjectURL(f);
     titleEl.textContent = f.name.replace(/\.[^.]+$/, '');
@@ -300,7 +296,7 @@
       micBtn.classList.add('on');
       micBtn.textContent = 'ปิดไมค์';
       micBtn.setAttribute('aria-pressed', 'true');
-      say(ytOpen ? 'เล่น YouTube แล้วคลื่นจะขยับตามเสียงจากลำโพง' : 'กำลังฟังเสียงจากไมค์');
+      say('กำลังฟังเสียงจากไมค์');
     }).catch(function (err) {
       var n = err && err.name;
       if (n === 'NotFoundError' || n === 'OverconstrainedError') say('ไม่พบไมค์ในเครื่องนี้ ต่อไมค์ก่อน หรือใช้ปุ่มเลือกเพลงแทน', true);
@@ -327,64 +323,43 @@
     else startMic();
   };
 
-  // ---------- YouTube ----------
-  var ytBox = document.getElementById('yt'), ytFrame = document.getElementById('ytFrame');
-  var ytUrl = document.getElementById('ytUrl'), ytOpen = false;
-
-  function openYt() {
-    var v = ytUrl.value.trim();
-    var m = v.match(/(?:v=|youtu\.be\/|shorts\/|embed\/|live\/)([\w-]{11})/) || v.match(/^([\w-]{11})$/);
-    if (!m) {
-      say('ลิงก์ YouTube ไม่ถูกต้อง คัดลอกลิงก์จากแถบที่อยู่แล้วลองอีกครั้ง', true);
-      return;
-    }
-    audio.pause();
-    ytFrame.innerHTML = '<iframe src="https://www.youtube.com/embed/' + m[1] +
-      '?autoplay=1&playsinline=1" allow="autoplay; encrypted-media; picture-in-picture" allowfullscreen ' +
-      'referrerpolicy="strict-origin-when-cross-origin" title="วิดีโอ YouTube"></iframe>';
-    ytBox.hidden = false;
-    ytOpen = true;
-    if (tabOn) say('กำลังจับเสียงจาก YouTube โดยตรง');
-    else startTab();
-  }
-
-  // จับเสียงของแท็บนี้โดยตรง ไม่ผ่านไมค์ จึงไม่มีเสียงรอบห้องปน และใช้กับหูฟังได้
+  // ---------- เสียงจากแท็บอื่น (เช่น แท็บ YouTube ที่เปิดแยกไว้) ----------
+  // จับเสียงโดยตรง ไม่ผ่านไมค์ และไม่ต้องฝังวิดีโอไว้ในหน้านี้
+  var tabBtn = document.getElementById('tabBtn');
   var tabOn = false, tabStream = null, tabNode = null;
 
   function startTab() {
     if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
-      useMicInstead();
+      say('เบราว์เซอร์นี้จับเสียงจากแท็บไม่ได้ ใช้ Chrome หรือ Edge บนคอมพิวเตอร์', true);
       return;
     }
     setupAudio();
     if (actx.state === 'suspended') actx.resume();
-    say('เลือก "แท็บนี้" แล้วเปิด "แชร์เสียงของแท็บด้วย"', true);
+    say('เลือกแท็บ YouTube แล้วเปิด "แชร์เสียงของแท็บด้วย"', true);
     navigator.mediaDevices.getDisplayMedia({
-      video: true, audio: true,
-      preferCurrentTab: true, selfBrowserSurface: 'include', systemAudio: 'include'
+      video: true, audio: true, selfBrowserSurface: 'exclude', systemAudio: 'include'
     }).then(function (stream) {
       if (!stream.getAudioTracks().length) {
         stream.getTracks().forEach(function (tr) { tr.stop(); });
-        say('ไม่ได้รับเสียง กดเปิดอีกครั้งแล้วเปิด "แชร์เสียงของแท็บด้วย"', true);
+        say('ไม่ได้รับเสียง กดอีกครั้งแล้วเปิด "แชร์เสียงของแท็บด้วย"', true);
         return;
       }
+      stopMic();
+      audio.pause();
       tabStream = stream;
       tabNode = actx.createMediaStreamSource(stream);
       tabNode.connect(analyser);
-      stopMic();
       tabOn = true;
       peak = 90;
-      stream.getAudioTracks()[0].onended = stopTab;
-      say('กำลังจับเสียงจาก YouTube โดยตรง');
-    }).catch(function () {
-      useMicInstead();
+      stream.getAudioTracks()[0].onended = function () { stopTab(); say('หยุดจับเสียงจากแท็บแล้ว', true); };
+      tabBtn.classList.add('on');
+      tabBtn.textContent = 'หยุดจับเสียงแท็บ';
+      tabBtn.setAttribute('aria-pressed', 'true');
+      say('กำลังจับเสียงจากแท็บ YouTube');
+    }).catch(function (err) {
+      if (err && err.name === 'NotAllowedError' && !/policy|permission/i.test(err.message || '')) say('ยกเลิกการแชร์แล้ว', true);
+      else say('จับเสียงจากแท็บไม่ได้ หน้านี้อาจถูกบล็อกสิทธิ์แชร์หน้าจอ', true);
     });
-  }
-
-  // จับเสียงแท็บไม่ได้ (เช่น บน Apps Script หรือมือถือ) ก็ใช้ไมค์ฟังจากลำโพงแทน
-  function useMicInstead() {
-    if (micOn) say('เล่น YouTube แล้วคลื่นจะขยับตามเสียงจากลำโพง');
-    else startMic();
   }
 
   function stopTab() {
@@ -392,18 +367,15 @@
     tabStream.getTracks().forEach(function (tr) { tr.stop(); });
     tabNode.disconnect();
     tabOn = false;
+    tabBtn.classList.remove('on');
+    tabBtn.textContent = 'จับเสียงจากแท็บ YouTube';
+    tabBtn.setAttribute('aria-pressed', 'false');
   }
 
-  function closeYt() {
-    stopTab();
-    ytFrame.innerHTML = '';
-    ytBox.hidden = true;
-    ytOpen = false;
-  }
-
-  document.getElementById('ytGo').onclick = openYt;
-  ytUrl.addEventListener('keydown', function (e) { if (e.key === 'Enter') openYt(); });
-  document.getElementById('ytClose').onclick = function () { closeYt(); say('ปิดวิดีโอแล้ว', true); };
+  tabBtn.onclick = function () {
+    if (tabOn) { stopTab(); say('หยุดจับเสียงจากแท็บแล้ว', true); }
+    else startTab();
+  };
 
   // เปิดหน้าเว็บแล้วขออนุญาตใช้ไมค์ทันที
   window.addEventListener('pointerdown', function () {
